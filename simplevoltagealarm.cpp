@@ -1,12 +1,9 @@
-// simple-battery-voltage-alarm Version 1.10
+// simple-battery-voltage-alarm Version 1.15
 // Make alarm sound in the terminal while battery voltage is out of range,
-// and make some statistic information. This program can only run on
+// and produce some statistic information. This program can only run on
 // tablet or notebook computers with Linux installed.
-// Without any warranty.
 
-// This is a small program, which doesn't contain hard-core algorithms,
-// complicated structures, or low-level hardware operations, thus
-// this code has been placed in the public domain.
+// This code has been placed in the public domain. Without any warranty.
 // However, In the purpose of bug reporting and version identification,
 // anyone who modifies the code should remain this comment and add
 // a record with an email address and the modifying date included.
@@ -16,10 +13,11 @@
 // Command for compiling:
 // g++ <codefile> -std=c++11 -pthread -o <executablefile>
 
-// Ver 1.00 (written by wuwbobo@outlook.com, within 2021-7-7~7-14)
+// Version 1.00 (2021-7-14, by wuwbobo@outlook.com)
 // First usable version.
-// Ver 1.10 (by wuwbobo@outlook.com, within 2021-8-10~8-12)
-// First release on github (by wuwbobo@outlook.com). Major changes:
+
+// Version 1.10 (2021-8-12, by wuwbobo@outlook.com)
+// First release on github. Major changes:
 // 1. The method of searching power gauge device path was changed,
 //    so user interaction is no longer required;
 // 2. The bug of not making alarm sound while battery power is too high was fixed;
@@ -31,14 +29,16 @@
 //    by adding '-l' parameter while starting the program.
 // 7. Memory usage limit of recorded readings was changed to 4 MB.
 
+// Version 1.15 (2021-8-13, by wuwbobo@outlook.com)
+// 1. Statistic feature and log feature was redesigned;
+// 2. Conditions of program resuming after computer had slept was considered,
+//    so it will not make wrong statistics.
+
 // Known problems:
-// 1. This is a terminal program, which cannot run on startup or at background;
-// 2. The program may supsend in sleeping mode, If happened, statistic information
-//    may be incorrect;
-// 3. The situation in which the charging line was pluged in but the battery
-//    is still discharging was not well considered in efficiency calculating.
-// 4. Calculation of 'mAh' don't care the internal resistance (if given).
-// 5. Yet this program don't use the interface functions declared in 'power_supply.h'
+// 1. This is a terminal program, which cannot run on startup or in background;
+//    and it may supsend in sleep mode.
+// 2. Calculation of 'mAh' don't care the internal resistance (maybe not a problem).
+// 3. Yet this program don't use the interface functions declared in 'power_supply.h'
 //    of Linux kernel headers. (it might not be a problem)
 //    see: https://www.kernel.org/doc/html/latest/power/power_supply_class.html
 
@@ -58,7 +58,7 @@
 
 using namespace std;
 
-bool filereadable(string filepath){
+bool file_readable(string filepath){
 	int r = access(filepath.c_str(), F_OK); //check for existence
 	if (r != 0) return false;
 	
@@ -66,15 +66,27 @@ bool filereadable(string filepath){
 	return (r == 0);
 }
 
-string timestr(time_t time, bool underline = false){
+string to_string_signed(float f) {return ((f >= 0)? "+":"") + to_string(f);}
+
+string time_string(time_t time, bool underline = false){
 	// here's C time operations, see C reference
 	// some of them can not be replaced by C++ <chrono> functions
 	string strformat = underline? "%Y-%m-%d_%H_%M_%S" : "%Y-%m-%d %H:%M:%S";
-	tm* pstructtime; char cstrtime[19];
+	tm* pstructtime; char cstrtime[20];
 	
 	pstructtime = localtime(&time);
 	strftime(cstrtime, 20, strformat.c_str(), pstructtime);
 	string str = cstrtime; //implicit cast
+	return str;
+}
+
+string difftime_string(time_t time){
+	int t = (int)time;
+	int h = t / 3600; t %= 3600;
+	int m = t / 60; t %= 60;
+	string str = ((h < 10)? "0":"") + to_string(h) + ':'
+	           + ((m < 10)? "0":"") + to_string(m) + ':'
+	           + ((t < 10)? "0":"") + to_string(t);
 	return str;
 }
 
@@ -109,11 +121,11 @@ float power_reading::power(){
 }
 	
 string power_reading::usrstr(bool withstatus){
-	return timestr(time) + " "
+	return time_string(time) + " "
 		+ (withstatus? (charging? (full? "Full ":"Charging "):"Discharging ") : " ")
+		+ ((capacity >= 0)? to_string(capacity) + "%, " : "")
 		+ to_string(voltage) + " V"
 		+ ((E == voltage)? "" : (" (E: " + to_string(E) + " V)")) + ", "
-		+ ((capacity >= 0)? to_string(capacity) + "%, " : "")
 		+ to_string(current) + " A, "
 		+ to_string(voltage * current) + " W" + (outofrange? "   !":"") + "\n";
 }
@@ -141,7 +153,7 @@ public:
 };
 
 float power_status_reader::freadvalue(string filepath){
-	if (! filereadable(filepath)) return 0;
+	if (! file_readable(filepath)) return 0;
 	
 	double val;
 	ifstream isf(filepath.c_str());
@@ -150,7 +162,7 @@ float power_status_reader::freadvalue(string filepath){
 }
 	
 string power_status_reader::freadstring(string filepath){
-	if (!filereadable(filepath)) return "";
+	if (!file_readable(filepath)) return "";
 	
 	string str;
 	ifstream isf(filepath.c_str());
@@ -189,9 +201,9 @@ power_status_reader::power_status_reader(bool m, float r):
 	currentpath += "current_now";
 	capacitypath += "capacity";
 	
-	if (!   (filereadable(statuspath)
-		  && filereadable(voltagepath)
-		  && filereadable(currentpath)))
+	if (!   (file_readable(statuspath)
+		  && file_readable(voltagepath)
+		  && file_readable(currentpath)))
 		invalid = true;
 	else {
 		if (! manualswitch)
@@ -234,14 +246,14 @@ power_reading power_status_reader::read(){
 float power_status_reader::maxvoltage(){
 	if (invalid) return 0;
 	string path = devicepath + "voltage_max_design";
-	if (! filereadable(path)) return 0;
+	if (! file_readable(path)) return 0;
 	return freadvalue(path)/1000/1000;
 }
 	
 string power_status_reader::technology(){
 	if (invalid) return "";
 	string path = devicepath + "technology";
-	if (! filereadable(path)) return "";
+	if (! file_readable(path)) return "";
 	return freadstring(path); 
 }
 
@@ -298,7 +310,8 @@ istream& operator>> (istream& is, poweralarmconfig& c){
 // default working folder will be ~ ($HOME) after chdir by getconfig(),
 // while ofstream::open(char*) and system(char*) are being called
 const string config_entry = "simple-battery-voltage-alarm";
-const string config_filename = "version_1_10.conf";
+const string config_filename = "version_1_15.conf";
+const string stat_filename = "stat.log";
 poweralarmconfig config;
 
 bool setconfig(){
@@ -308,7 +321,7 @@ bool setconfig(){
 		return false;
 	}
 	
-	cout << "simple-battery-voltage-alarm Version 1.10\n"
+	cout << "simple-battery-voltage-alarm Version 1.15\n"
 		 << "\tThis program checks for battery voltage and makes "
 		 << "alarm sound when the voltage is out of proper range.\n"
 		 << "\tRequirement: driver support of your model of fuel gauge (PMIC) "
@@ -316,12 +329,12 @@ bool setconfig(){
 	cout << "\tConfig not found, we'll start configuration.\n\n";
 	
 	string tmppath = getenv("HOME") + (string)"/.config";
-	if (! filereadable(tmppath)){
+	if (! file_readable(tmppath)){
 		mkdir(tmppath.c_str(), S_IRWXU); //rwx------, see man 7 inode
 		cout << "\tDirectory " << tmppath << " created.\n";
 	}
 	tmppath += '/' + config_entry;
-	if (! filereadable(tmppath)){
+	if (! file_readable(tmppath)){
 		mkdir(tmppath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //rwxrwxr-x
 		cout << "\tDirectory " << tmppath <<  " created.\n";
 	}
@@ -388,8 +401,10 @@ bool setconfig(){
 	cin >> tmpmaxv;
 		
 	if (! config.manualswitch)
-		cout << "\tPower of battery can be calculated, which is minus when discharging.\n";
-	else cout << "\tThe power of computer can be calculated as minus by this program.\n";
+		cout << "\tPower of battery can be calculated, which is minus while discharging.\n";
+	else
+		cout << "\tDischarge power of battery can be calculated, "
+		     << "and power of computer circuit can be calculated while charging.\n";
 	cout << "\tMax power (W, absolute): ";
 	cin >> tmpmaxp;
 	
@@ -400,12 +415,12 @@ bool setconfig(){
 		cin.clear(); cin.ignore(numeric_limits<int>::max(), '\n');
 	} else {config.minvoltage = tmpminv; config.maxvoltage = tmpmaxv; config.maxpower = tmpmaxp;}
 		
-	if (filereadable(config_filename))
+	if (file_readable(config_filename))
 		remove(config_filename.c_str()); //delete damaged config
 	ofstream ofs(config_filename);
 	if (ofs){
 		ofs << config << endl; //save config
-		cout << "\tConfig saved successfully.\n\n";
+		cout << "\n\tConfig saved successfully.\n\n";
 	}
 	
 	return true;
@@ -415,13 +430,13 @@ bool getconfig(){
 	bool needconfig = false;
 	
 	chdir(getenv("HOME")); chdir((".config/" + config_entry).c_str());
-	if (! filereadable(config_filename)) needconfig = true; //config file not found
+	if (! file_readable(config_filename)) needconfig = true; //config file not found
 	else{
 		ifstream ifs(config_filename);
 		if (! (ifs >> config)) needconfig = true; //config file damaged
 		else
 			cout << getenv("PWD") << '/' << config_filename <<" found:\n" << config.usrstr() << "\n"
-			     << "You can reconfigure the program (recalculate internal resistance) by adding parameter -c.\n";
+			     << "you can reconfigure the program (recalculate internal resistance) by adding parameter -c.\n";
 		if (ifs.is_open()) ifs.close();
 	}
 	
@@ -433,9 +448,9 @@ bool tagexit = false; bool tagcharging = false; bool tagsavelog = false; //for c
 void inputloop(){
 	string str;
 	
-	cout << "press Ctrl+D or input 'e' to end the program, input 'l' to enable/disable log saving";
+	cout << "press Ctrl+D or input 'e' to end the program, input 'l' to enable/disable complete log saving";
 	if (config.manualswitch)
-		cout << ", input 'c'(charging) or 'd'(discharging) to switch charging status (nessesary).\n"
+		cout << ", input 'c'(charging) or 'd'(discharging) to set charging status (nessesary, it should be right after you plug in or pull out the charge line).\n"
 			 << "Notice: to avoid disturbing, this program determines "
 			 << "whether or not to make alarm sound by your manual status setting.\n\n";
 	else cout << ".\n\n";
@@ -461,14 +476,15 @@ void inputloop(){
 }
 
 void checkloop(){
+	const int check_interval = 5; // 5 seconds
+	
 	power_status_reader reader(config.manualswitch, config.ir); //creates reader
 	if (! reader) {cout << "Error: Failed to read power status. Press Ctrl+D or Input 'e' to end program... "; return;}
 
-	const int check_interval = 5; // 5 seconds
 	vector<power_reading> readings;
-	float Wh = 0, Ah = 0, rWh = 0; int otimes = 0; //times of out-of-range readings
+	float Wh = 0, mAh = 0, rWh = 0; int otimes = 0; //times of out-of-range readings
 	
-	//current recording, actually discharging (i < 0), seconds between last two readings
+	//current reading, actually discharging (i < 0), seconds between last two readings
 	power_reading creading; bool actuald; time_t dtime;
 	
 	bool first = true; bool pcharging; //first loop, previous status
@@ -489,69 +505,97 @@ void checkloop(){
 		
 		if (! first){
 			dtime = difftime(creading.time, readings.back().time); //back() returns last element
+			if (dtime > check_interval * 5) dtime = check_interval * 5; // the program had suspended
 			
 			//both should be positive if it is charging, or minus if it is discharging
 			Wh += readings.back().power() * dtime/3600; 
-			Ah += readings.back().current * dtime/3600;
+			mAh += readings.back().current * 1000 * dtime/3600;
 			
-			if (! config.manualswitch) //calculate energy wasted on internal resistance, always positive
+			// calculate energy wasted on internal resistance, always positive
+			if (!config.manualswitch || !pcharging) //in case of 'manualswitch', rWh can be calculated when discharging
 				rWh += abs((readings.back().E - readings.back().voltage) * readings.back().current) * dtime/3600;
 			
-			// conditions of clearing record: the vector have taken over 4 MB of memory,
-			// status changed or the program will end.
-			if  (   readings.capacity() >= 0x20000
-				 || ((creading.charging != pcharging || tagexit) && (readings.size() > 0)) ) {
-				string strstat = ""; string strch = pcharging? "Charging":"Discharging";
+			// conditions of clearing record: the vector have taken 4 MB of memory,
+			// status changed, the program had suspended in sleeping mode, or the program will end.
+			if  (   readings.size() >= 0x20000
+				 || creading.charging != pcharging
+				 || dtime == check_interval * 5
+				 || tagexit)
+			{
+				time_t span = difftime(readings.back().time, readings.front().time); //(s)
+				int poutrange = otimes*1.0/readings.size() * 100;
 				
-				time_t span = difftime(readings.back().time, readings.front().time);
-				int poutrange = otimes*1.0/readings.size() * 100; //add 1.0 to make float quotient left of *
-				int mAh = round(abs(1000*Ah));
+				float dE = readings.back().E - readings.front().E; int dcapacity;
+				if (! config.manualswitch) //percentage of battery remaining capacity is available
+					dcapacity = readings.back().capacity - readings.front().capacity;
 				
-				strstat += strch + " for " + to_string(span) + " seconds (out of range in "
-						 + to_string(poutrange) + "% of time)\n"
-						 + "from " + timestr(readings.front().time)
-						 + " to " + timestr(readings.back().time) + ",\n"
-						 + "Battery voltage changed from " + to_string(readings.front().E) + " V"
-						 + ((! config.manualswitch) ? " (" + to_string(readings.front().capacity) + "%)" : "")
-						 + " to " + to_string(readings.back().E) + " V"
-						 + ((! config.manualswitch) ? " (" + to_string(readings.back().capacity) + "%)" : "")
-						 + ",\n";
-				
-				if (! config.manualswitch){
-					strstat += ((Wh > 0)? to_string(Wh - rWh) : to_string(abs(Wh)))
-					         + " Wh (about " + to_string(mAh) + " mAh) "
-					         + ((Wh > 0)? "Charged.\n" : "Discharged.\n");
-				} else {
-					strstat += to_string(abs(Wh))
-					         + " Wh (about " + to_string(mAh) + " mAh) "
-					         + (pcharging? "of energy spent.\n" : "Discharged.\n");
+				// W is the charge power of battery, or (minus) discharge power of battery.
+				// but in case of 'manualswitch' and charging, W is (minus) power of computer circuit
+				float W = Wh*3600.0/span;
+				float rW; if (!config.manualswitch || !pcharging) rW = rWh*3600.0/span;
+				float CWh; if (pcharging) CWh = Wh - rWh;
+				float esfullWh; float esfullmAh;
+				if (!config.manualswitch && dcapacity >= 5){ //changed at least 5%
+					if (pcharging)
+						esfullWh = CWh * 100 / dcapacity;
+					else
+						esfullWh = Wh * 100 / dcapacity;
+					esfullmAh = mAh * 100 / dcapacity;
 				}
 				
-				if (Wh < 0 || (Wh > 0 && !config.manualswitch)){ //can not calc for charging if 'manualswitch'
-					int pefficiency = round((1 - rWh/Wh) * 100);
-					if (pefficiency < 100)
-						strstat += ("Efficiency: " + to_string(pefficiency) + "%.\n");
-				}
+				string strstat;
+				strstat = (pcharging? "Charged for ":"Discharged for ") + difftime_string(span) + ", ";
+				if (! config.manualswitch)
+					strstat += to_string_signed(dcapacity) + "% ("
+					         + to_string(readings.front().capacity) + "% -> "
+					         + to_string(readings.back().capacity) + "%), ";
+				strstat += to_string_signed(dE) + " V ("
+				         + to_string(readings.front().E) + " V -> "
+				         + to_string(readings.back().E) + " V)\n"
+				         + time_string(readings.front().time) + " ~ " + time_string(readings.back().time)
+				         + " (out of range in " + to_string(poutrange) + "% of time)\n";
+				if (!config.manualswitch || !pcharging)
+					strstat += "Power of Battery: " + to_string(W) + " W\t"
+					         + "Thermal Power (r): " + to_string(rW) + " W\n"
+					         + "Energy: " + to_string_signed((Wh > 0)? CWh : Wh) + " Wh ("
+					         + to_string_signed(mAh) + " mAh)\n";
+				else
+					strstat += "Power of Computer Circuit: " + to_string(abs(W)) + " W\n"
+					         + "Energy cost by Computer Circuit: " + to_string(abs(Wh)) + " Wh ("
+					         + to_string(abs(mAh)) + " mAh)\n";
+				if (!config.manualswitch && dcapacity >= 5)
+					strstat += "Full Capacity Estimation: " + to_string(esfullWh) + " Wh ("
+					           + to_string(esfullmAh) + " mAh)\n";
 				
-				cout << '\n' << strstat;
+				cout << '\n' << strstat << '\n';
 				
-				if (tagsavelog && readings.size() > 5){ // save log file
-					string logfilename = strch + "_" + timestr(time(NULL),true) + ".log";
-					ofstream ofs(logfilename);
-					if (ofs){
-						ofs << strstat << '\n';
-						for (int i = 0; i < readings.size(); i++) ofs << readings[i].usrstr(false);
-						ofs << endl;
-						ofs.close();
-						cout << "\nlog file " << getenv("PWD") << '/' << logfilename << " saved.\n";
-						if (! tagexit) cout << '\n';
+				if (readings.size() >= 5){ //save log file
+					ofstream ofsstat(stat_filename, ios::app); //create or append	
+					if (ofsstat){
+						ofsstat << strstat << endl;
+						ofsstat.close();
+						cout << "appended to log file " << getenv("PWD") << '/' << stat_filename << ".\n";
 					}
-				} else cout << '\n';
+					if (tagsavelog){ //save complete log
+						string log_filename = (pcharging? "Charging_" : "Discharging_")
+						                    + time_string(time(NULL),true) + ".log";
+						ofstream ofslog(log_filename);
+						if (ofslog){
+							ofslog << strstat << '\n';
+							for (int i = 0; i < readings.size(); i++)
+								ofslog << readings[i].usrstr(false);
+							ofslog << endl;
+							ofslog.close();
+							cout << "log file " << getenv("PWD") << '/' << log_filename << " saved.\n";
+						}
+					}
+					if (! tagexit) cout << '\n';
+				}  else cout << '\n';
 				
 				// swap with a empty temp vector that will be destructed implicitly to release memory usage
 				vector<power_reading>().swap(readings);
 				
-				Wh = 0; Ah = 0; rWh = 0; otimes = 0;
+				Wh = 0; mAh = 0; rWh = 0; otimes = 0;
 				if (tagexit) return;
 			}
 		} else first = false;
@@ -559,7 +603,7 @@ void checkloop(){
 		cout << creading.usrstr();
 		if (creading.outofrange) otimes++;
 		
-		//add an item. if previous readings are saved, it makes sure the vector has at least one item
+		//add an item. if previous readings was cleared, it makes sure the vector has at least one item
 		readings.push_back(creading);
 		
 		pcharging = creading.charging;
