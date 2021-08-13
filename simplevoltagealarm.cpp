@@ -1,6 +1,6 @@
 // simple-battery-voltage-alarm Version 1.15
-// Make alarm sound in the terminal while battery voltage is out of range,
-// and produce some statistic information. This program can only run on
+// Makes alarm sound in the terminal while battery voltage is out of range,
+// and produces some statistic information. This program can only run on
 // tablet or notebook computers with Linux installed.
 
 // This code has been placed in the public domain. Without any warranty.
@@ -33,6 +33,7 @@
 // 1. Statistic feature and log feature was redesigned;
 // 2. Conditions of program resuming after computer had slept was considered,
 //    so it will not make wrong statistics.
+// 3. Fixed some bugs.
 
 // Known problems:
 // 1. This is a terminal program, which cannot run on startup or in background;
@@ -312,6 +313,8 @@ istream& operator>> (istream& is, poweralarmconfig& c){
 const string config_entry = "simple-battery-voltage-alarm";
 const string config_filename = "version_1_15.conf";
 const string stat_filename = "stat.log";
+
+string working_folder;
 poweralarmconfig config;
 
 bool setconfig(){
@@ -328,17 +331,17 @@ bool setconfig(){
 		 << "included in your Linux distribution (Ubuntu should have no problem).\n\n";
 	cout << "\tConfig not found, we'll start configuration.\n\n";
 	
-	string tmppath = getenv("HOME") + (string)"/.config";
-	if (! file_readable(tmppath)){
-		mkdir(tmppath.c_str(), S_IRWXU); //rwx------, see man 7 inode
-		cout << "\tDirectory " << tmppath << " created.\n";
+	working_folder = getenv("HOME") + (string)"/.config";
+	if (! file_readable(working_folder)){
+		mkdir(working_folder.c_str(), S_IRWXU); //rwx------, see man 7 inode
+		cout << "\tDirectory " << working_folder << " created.\n";
 	}
-	tmppath += '/' + config_entry;
-	if (! file_readable(tmppath)){
-		mkdir(tmppath.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //rwxrwxr-x
-		cout << "\tDirectory " << tmppath <<  " created.\n";
+	working_folder += '/' + config_entry;
+	if (! file_readable(working_folder)){
+		mkdir(working_folder.c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH); //rwxrwxr-x
+		cout << "\tDirectory " << working_folder <<  " created.\n";
 	}
-	chdir(tmppath.c_str());
+	chdir(working_folder.c_str());
 	
 	char s[256]; //temp c string
 	cout << "\tHas your battery charge circuit been fixed in a way which made the battery(s) "
@@ -429,13 +432,14 @@ bool setconfig(){
 bool getconfig(){
 	bool needconfig = false;
 	
-	chdir(getenv("HOME")); chdir((".config/" + config_entry).c_str());
+	working_folder = (string)getenv("HOME") + "/.config/" + config_entry;
+	chdir(working_folder.c_str());
 	if (! file_readable(config_filename)) needconfig = true; //config file not found
 	else{
 		ifstream ifs(config_filename);
 		if (! (ifs >> config)) needconfig = true; //config file damaged
 		else
-			cout << getenv("PWD") << '/' << config_filename <<" found:\n" << config.usrstr() << "\n"
+			cout << working_folder << '/' << config_filename <<" found:\n" << config.usrstr() << "\n"
 			     << "you can reconfigure the program (recalculate internal resistance) by adding parameter -c.\n";
 		if (ifs.is_open()) ifs.close();
 	}
@@ -522,59 +526,59 @@ void checkloop(){
 				 || dtime == check_interval * 5
 				 || tagexit)
 			{
-				time_t span = difftime(readings.back().time, readings.front().time); //(s)
-				int poutrange = otimes*1.0/readings.size() * 100;
+				if (readings.size() >= 5){ //make statistics
+					time_t span = difftime(readings.back().time, readings.front().time); //(s)
+					int poutrange = otimes*1.0/readings.size() * 100;
 				
-				float dE = readings.back().E - readings.front().E; int dcapacity;
-				if (! config.manualswitch) //percentage of battery remaining capacity is available
-					dcapacity = readings.back().capacity - readings.front().capacity;
+					float dE = readings.back().E - readings.front().E; int dcapacity;
+					if (! config.manualswitch) //percentage of battery remaining capacity is available
+						dcapacity = readings.back().capacity - readings.front().capacity;
 				
-				// W is the charge power of battery, or (minus) discharge power of battery.
-				// but in case of 'manualswitch' and charging, W is (minus) power of computer circuit
-				float W = Wh*3600.0/span;
-				float rW; if (!config.manualswitch || !pcharging) rW = rWh*3600.0/span;
-				float CWh; if (pcharging) CWh = Wh - rWh;
-				float esfullWh; float esfullmAh;
-				if (!config.manualswitch && dcapacity >= 5){ //changed at least 5%
-					if (pcharging)
-						esfullWh = CWh * 100 / dcapacity;
+					// W is the charge power of battery, or (minus) discharge power of battery.
+					// but in case of 'manualswitch' and charging, W is (minus) power of computer circuit
+					float W = Wh*3600.0/span;
+					float rW; if (!config.manualswitch || !pcharging) rW = rWh*3600.0/span;
+					float CWh; if (pcharging) CWh = Wh - rWh;
+					float esfullWh; float esfullmAh;
+					if (!config.manualswitch && dcapacity >= 5){ //changed at least 5%
+						if (pcharging)
+							esfullWh = CWh * 100 / dcapacity;
+						else
+							esfullWh = Wh * 100 / dcapacity;
+						esfullmAh = mAh * 100 / dcapacity;
+					}
+					
+					string strstat;
+					strstat = (pcharging? "Charged for ":"Discharged for ") + difftime_string(span) + ", ";
+					if (! config.manualswitch)
+						strstat += to_string_signed(dcapacity) + "% ("
+						         + to_string(readings.front().capacity) + "% -> "
+						         + to_string(readings.back().capacity) + "%), ";
+					strstat += to_string_signed(dE) + " V ("
+					         + to_string(readings.front().E) + " V -> "
+					         + to_string(readings.back().E) + " V)\n"
+					         + time_string(readings.front().time) + " ~ " + time_string(readings.back().time)
+					         + " (out of range in " + to_string(poutrange) + "% of time)\n";
+					if (!config.manualswitch || !pcharging)
+						strstat += "Power of Battery: " + to_string(W) + " W\t"
+						         + "Thermal Power (r): " + to_string(rW) + " W\n"
+						         + "Energy: " + to_string_signed((Wh > 0)? CWh : Wh) + " Wh ("
+						         + to_string_signed(mAh) + " mAh)\n";
 					else
-						esfullWh = Wh * 100 / dcapacity;
-					esfullmAh = mAh * 100 / dcapacity;
-				}
+						strstat += "Power of Computer Circuit: " + to_string(abs(W)) + " W\n"
+						         + "Energy cost by Computer Circuit: " + to_string(abs(Wh)) + " Wh ("
+						         + to_string(abs(mAh)) + " mAh)\n";
+					if (!config.manualswitch && dcapacity >= 5)
+						strstat += "Full Capacity Estimation: " + to_string(esfullWh) + " Wh ("
+						           + to_string(esfullmAh) + " mAh)\n";
+					
+					cout << '\n' << strstat << '\n';
 				
-				string strstat;
-				strstat = (pcharging? "Charged for ":"Discharged for ") + difftime_string(span) + ", ";
-				if (! config.manualswitch)
-					strstat += to_string_signed(dcapacity) + "% ("
-					         + to_string(readings.front().capacity) + "% -> "
-					         + to_string(readings.back().capacity) + "%), ";
-				strstat += to_string_signed(dE) + " V ("
-				         + to_string(readings.front().E) + " V -> "
-				         + to_string(readings.back().E) + " V)\n"
-				         + time_string(readings.front().time) + " ~ " + time_string(readings.back().time)
-				         + " (out of range in " + to_string(poutrange) + "% of time)\n";
-				if (!config.manualswitch || !pcharging)
-					strstat += "Power of Battery: " + to_string(W) + " W\t"
-					         + "Thermal Power (r): " + to_string(rW) + " W\n"
-					         + "Energy: " + to_string_signed((Wh > 0)? CWh : Wh) + " Wh ("
-					         + to_string_signed(mAh) + " mAh)\n";
-				else
-					strstat += "Power of Computer Circuit: " + to_string(abs(W)) + " W\n"
-					         + "Energy cost by Computer Circuit: " + to_string(abs(Wh)) + " Wh ("
-					         + to_string(abs(mAh)) + " mAh)\n";
-				if (!config.manualswitch && dcapacity >= 5)
-					strstat += "Full Capacity Estimation: " + to_string(esfullWh) + " Wh ("
-					           + to_string(esfullmAh) + " mAh)\n";
-				
-				cout << '\n' << strstat << '\n';
-				
-				if (readings.size() >= 5){ //save log file
 					ofstream ofsstat(stat_filename, ios::app); //create or append	
 					if (ofsstat){
 						ofsstat << strstat << endl;
 						ofsstat.close();
-						cout << "appended to log file " << getenv("PWD") << '/' << stat_filename << ".\n";
+						cout << "appended to log file " << working_folder << '/' << stat_filename << ".\n";
 					}
 					if (tagsavelog){ //save complete log
 						string log_filename = (pcharging? "Charging_" : "Discharging_")
@@ -586,7 +590,7 @@ void checkloop(){
 								ofslog << readings[i].usrstr(false);
 							ofslog << endl;
 							ofslog.close();
-							cout << "log file " << getenv("PWD") << '/' << log_filename << " saved.\n";
+							cout << "log file " << working_folder << '/' << log_filename << " saved.\n";
 						}
 					}
 					if (! tagexit) cout << '\n';
