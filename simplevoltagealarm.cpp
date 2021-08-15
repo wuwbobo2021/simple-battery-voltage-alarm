@@ -29,21 +29,29 @@
 //    by adding '-l' parameter while starting the program.
 // 7. Memory usage limit of recorded readings was changed to 4 MB.
 
-// Version 1.15 (2021-8-13, by wuwbobo@outlook.com)
-// 1. Statistic feature and log feature was redesigned;
-// 2. Conditions of program resuming after computer had slept was considered,
+// Version 1.15 (2021-8-15, by wuwbobo@outlook.com)
+// 1. Decimal digits was limited to 3 to improve readability;
+// 2. Statistic feature and log feature was redesigned: average power
+//    can be calculated; the useless 'efficiency' was replaced by thermal power;
+//    maximum power and full capacity estimation was added;
+// 3. Conditions of program resuming after computer had slept was considered,
 //    so it will not make wrong statistics.
-// 3. Fixed some bugs.
+// 4. In case of the power status needs to be set mannually and it was delayed,
+//    the program will check if there's significant voltage difference between
+//    last three readings, if so, it might be caused by r while status was changed,
+//    so the program will discard last 1 or 2 reading(s) to make correct summary.
+// 5. Fixed some bugs.
 
 // Known problems:
 // 1. This is a terminal program, which cannot run on startup or in background;
 //    and it may supsend in sleep mode.
-// 2. Calculation of 'mAh' don't care the internal resistance (maybe not a problem).
+// 2. Calculation of 'mAh' don't care the internal resistance (maybe it's not a problem).
 // 3. Yet this program don't use the interface functions declared in 'power_supply.h'
 //    of Linux kernel headers. (it might not be a problem)
 //    see: https://www.kernel.org/doc/html/latest/power/power_supply_class.html
 
 #include <iostream>
+#include <sstream>
 #include <fstream>
 #include <string>
 #include <cstring>
@@ -67,9 +75,20 @@ bool file_readable(string filepath){
 	return (r == 0);
 }
 
-string to_string_signed(float f) {return ((f >= 0)? "+":"") + to_string(f);}
+string float_str(float f, unsigned int precision = 3, bool showpos = false){
+	static stringstream sstr; //not on stack
+	sstr.str(""); //clear buffer
+	sstr.setf(ios::fixed); sstr.precision(precision);
+	if (showpos)
+		sstr.setf(ios::showpos);
+	else
+		sstr.unsetf(ios::showpos);
+	sstr << f;
+	//stringsttream::str() returns a string object with a copy of contents in the stream buffer
+	return sstr.str();
+}
 
-string time_string(time_t time, bool underline = false){
+string time_str(time_t time, bool underline = false){
 	// here's C time operations, see C reference
 	// some of them can not be replaced by C++ <chrono> functions
 	string strformat = underline? "%Y-%m-%d_%H_%M_%S" : "%Y-%m-%d %H:%M:%S";
@@ -81,7 +100,7 @@ string time_string(time_t time, bool underline = false){
 	return str;
 }
 
-string difftime_string(time_t time){
+string difftime_str(time_t time){
 	int t = (int)time;
 	int h = t / 3600; t %= 3600;
 	int m = t / 60; t %= 60;
@@ -122,13 +141,13 @@ float power_reading::power(){
 }
 	
 string power_reading::usrstr(bool withstatus){
-	return time_string(time) + " "
+	return time_str(time) + " "
 		+ (withstatus? (charging? (full? "Full ":"Charging "):"Discharging ") : " ")
 		+ ((capacity >= 0)? to_string(capacity) + "%, " : "")
-		+ to_string(voltage) + " V"
-		+ ((E == voltage)? "" : (" (E: " + to_string(E) + " V)")) + ", "
-		+ to_string(current) + " A, "
-		+ to_string(voltage * current) + " W" + (outofrange? "   !":"") + "\n";
+		+ float_str(voltage) + " V"
+		+ ((E == voltage)? "" : (" (E: " + float_str(E) + " V)")) + ", "
+		+ float_str(current) + " A, "
+		+ float_str(voltage * current) + " W" + (outofrange? "   !":"") + "\n";
 }
 	
 power_reading::operator const string(){ // implicit cast to const std::string
@@ -259,7 +278,7 @@ string power_status_reader::technology(){
 }
 
 struct poweralarmconfig{
-	bool manualswitch = false; // It's true in case of power gauge don't know if it is charging,
+	bool manualswitch = false; // It should be true in case of the power gauge don't know if it is charging,
 							   // and the current equals that of computer circuit.
 	float ir; //internal resistance
 	float minvoltage;
@@ -278,16 +297,18 @@ void poweralarmconfig::reset(){
 	
 string poweralarmconfig::usrstr(){
 	string str = "";
-	str += "Manual switch: ";
-	str += (manualswitch? "Enabled":"Disabled");
-	str += "\nInternal resistance: " + to_string(ir) + " Ω"
-         + "\nMin voltage: " + to_string(minvoltage) + " V"
-         + "\nMax voltage: " + to_string(maxvoltage) + " V"
-         + "\nMax power: " + to_string(maxpower) + " W\n";
+	str += "Manual Switch: ";
+	str += (manualswitch? "Enabled\n":"Disabled\n");
+	str += "Internal Resistance: " + float_str(ir) + " Ω\n"
+		 + "Proper Range: \n"
+         + "  Min Voltage: " + float_str(minvoltage) + " V\n"
+         + "  Max Voltage: " + float_str(maxvoltage) + " V\n"
+         + "  Max Power: " + float_str(maxpower) + " W\n";
 	return str;
 }
 
 ostream& operator<< (ostream& os, poweralarmconfig& c){ // & means pass by reference
+	os.setf(ios::fixed); os.precision(3);
 	os << "[PowerAlarmConfig]\nManualSwitch = " << c.manualswitch << "\nInternalResistance = "
 	   << c.ir << "\nMinVoltage = " << c.minvoltage << "\nMaxVoltage = " << c.maxvoltage
 	   << "\nMaxPower = " << c.maxpower << '\n';
@@ -326,7 +347,7 @@ bool setconfig(){
 	
 	cout << "simple-battery-voltage-alarm Version 1.15\n"
 		 << "\tThis program checks for battery voltage and makes "
-		 << "alarm sound when the voltage is out of proper range.\n"
+		 << "alarm sound when the voltage (indicating current capacity) is out of proper range.\n"
 		 << "\tRequirement: driver support of your model of fuel gauge (PMIC) "
 		 << "included in your Linux distribution (Ubuntu should have no problem).\n\n";
 	cout << "\tConfig not found, we'll start configuration.\n\n";
@@ -374,7 +395,7 @@ bool setconfig(){
 		cin.getline(s, 256);
 	}
 	tmprecord = testrd.read(); U1 = tmprecord.voltage; I1 = -tmprecord.current;
-	cout << "\tSample 1: " << U1 << " V, " << I1 << " A.\n";
+	cout << "\tSample 1: " << float_str(U1) << " V, " << float_str(I1) << " A.\n";
 			
 	cout << "\tPlease do somthing to make the current change"
 		 << (config.manualswitch? " (but make sure it is Discharging)" : "")
@@ -382,18 +403,18 @@ bool setconfig(){
 	cin.getline(s, 256);
 	
 	tmprecord = testrd.read(); U2 = tmprecord.voltage; I2 = -tmprecord.current;
-	cout << "\tSample 2: " << U2 << " V, " << I2 << " A.\n";
+	cout << "\tSample 2: " << float_str(U2) << " V, " << float_str(I2) << " A.\n";
 	
 	if (abs(I1 - I2) < 0.001)
-		cout << "\tSorry, the current has not changed, r was set to default: " << config.ir << " Ω.\n";
+		cout << "\tSorry, the current has not changed, r was set to default: " << float_str(config.ir) << " Ω.\n";
 	else {
 		r = (U2 - U1)/(I1 - I2);
-		cout << "\tr: " << r << " Ω. do you think it's right value? (Y/n) ";
+		cout << "\tr: " << float_str(r) << " Ω. do you think it's right value? (Y/n) ";
 		cin.getline(s, 256);
 		if (tolower(s[0]) == 'y')
 			config.ir = r;
 		else
-			cout << "\tr was set to default: " << config.ir << " Ω.\n";
+			cout << "\tr was set to default: " << float_str(config.ir) << " Ω.\n";
 	}
 	cout << '\n';
 	
@@ -413,8 +434,8 @@ bool setconfig(){
 	
 	if (! cin) {
 		cout << "\n\tSorry, at least one of them is not numeric. "
-			 << "Default values will be used: " << config.minvoltage << '~'
-			 << config.maxvoltage << " V, " << config.maxpower << " W.\n";
+			 << "Default values will be used: " << float_str(config.minvoltage) << '~'
+			 << float_str(config.maxvoltage) << " V, " << float_str(config.maxpower) << " W.\n";
 		cin.clear(); cin.ignore(numeric_limits<int>::max(), '\n');
 	} else {config.minvoltage = tmpminv; config.maxvoltage = tmpmaxv; config.maxpower = tmpmaxp;}
 		
@@ -448,36 +469,8 @@ bool getconfig(){
 	else return true;
 }
 
-bool tagexit = false; bool tagcharging = false; bool tagsavelog = false; //for checkloop to read
-void inputloop(){
-	string str;
-	
-	cout << "press Ctrl+D or input 'e' to end the program, input 'l' to enable/disable complete log saving";
-	if (config.manualswitch)
-		cout << ", input 'c'(charging) or 'd'(discharging) to set charging status (nessesary, it should be right after you plug in or pull out the charge line).\n"
-			 << "Notice: to avoid disturbing, this program determines "
-			 << "whether or not to make alarm sound by your manual status setting.\n\n";
-	else cout << ".\n\n";
-	
-	while (cin >> str){
-		char f = tolower(str.c_str()[0]);
-		switch (f){
-			case 'e':
-				tagexit = true; break;
-			case 'c':
-				if (config.manualswitch) tagcharging = true;
-				break;
-			case 'd':
-				if (config.manualswitch) tagcharging = false;
-				break;
-			case 'l':
-				tagsavelog = ! tagsavelog;
-				cout << "Log Saving " << (tagsavelog? "Enabled" : "Disabled") << ".\n";
-		}
-	}
-	
-	tagexit = true; // Ctrl+D pressed, input ended
-}
+//inputloop() will set these tags for checkloop() to read
+bool tagexit = false; bool tagcharging = false; bool tagsavelog = false; 
 
 void checkloop(){
 	const int check_interval = 5; // 5 seconds
@@ -486,7 +479,7 @@ void checkloop(){
 	if (! reader) {cout << "Error: Failed to read power status. Press Ctrl+D or Input 'e' to end program... "; return;}
 
 	vector<power_reading> readings;
-	float Wh = 0, mAh = 0, rWh = 0; int otimes = 0; //times of out-of-range readings
+	float maxW = 0, Wh = 0, mAh = 0, rWh = 0; int otimes = 0; //times of out-of-range readings
 	
 	//current reading, actually discharging (i < 0), seconds between last two readings
 	power_reading creading; bool actuald; time_t dtime;
@@ -527,6 +520,16 @@ void checkloop(){
 				 || tagexit)
 			{
 				if (readings.size() >= 5){ //make statistics
+					if (config.manualswitch){
+						power_reading p15 = readings[readings.size() - 2 - 1]; //read 15 seconds before
+						for (int i = 1; i <= 2; i++) // last two readings can be removed
+							if (abs(readings.back().voltage - p15.voltage) >= 0.1){
+								//such difference should be caused by manual switch delay
+								if (readings.back().outofrange) otimes -= 1; // it doesn't count
+								readings.pop_back();
+							}
+					}
+					
 					time_t span = difftime(readings.back().time, readings.front().time); //(s)
 					int poutrange = otimes*1.0/readings.size() * 100;
 				
@@ -549,28 +552,28 @@ void checkloop(){
 					}
 					
 					string strstat;
-					strstat = (pcharging? "Charged for ":"Discharged for ") + difftime_string(span) + ", ";
+					strstat = (pcharging? "Charged for ":"Discharged for ") + difftime_str(span) + ", ";
 					if (! config.manualswitch)
-						strstat += to_string_signed(dcapacity) + "% ("
+						strstat += to_string(dcapacity) + "% ("
 						         + to_string(readings.front().capacity) + "% -> "
 						         + to_string(readings.back().capacity) + "%), ";
-					strstat += to_string_signed(dE) + " V ("
-					         + to_string(readings.front().E) + " V -> "
-					         + to_string(readings.back().E) + " V)\n"
-					         + time_string(readings.front().time) + " ~ " + time_string(readings.back().time)
+					strstat += float_str(dE, 3, true) + " V ("
+					         + float_str(readings.front().E) + " V -> "
+					         + float_str(readings.back().E) + " V)\n"
+					         + time_str(readings.front().time) + " ~ " + time_str(readings.back().time)
 					         + " (out of range in " + to_string(poutrange) + "% of time)\n";
 					if (!config.manualswitch || !pcharging)
-						strstat += "Power of Battery: " + to_string(W) + " W\t"
-						         + "Thermal Power (r): " + to_string(rW) + " W\n"
-						         + "Energy: " + to_string_signed((Wh > 0)? CWh : Wh) + " Wh ("
-						         + to_string_signed(mAh) + " mAh)\n";
+						strstat += "Average Power of Battery: " + float_str(W) + " W (Max: " + float_str(maxW) + " W)    "
+						         + "Thermal Power (r): " + float_str(rW) + " W\n"
+						         + "Charged: " + float_str((Wh > 0)? CWh : Wh, 3, true) + " Wh ("
+						         + float_str(mAh, 0, true) + " mAh)\n";
 					else
-						strstat += "Power of Computer Circuit: " + to_string(abs(W)) + " W\n"
-						         + "Energy cost by Computer Circuit: " + to_string(abs(Wh)) + " Wh ("
-						         + to_string(abs(mAh)) + " mAh)\n";
+						strstat += "Power of Computer Circuit: " + float_str(abs(W)) + " W\n"
+						         + "Energy cost by Computer Circuit: " + float_str(abs(Wh)) + " Wh ("
+						         + float_str(abs(mAh), 0) + " mAh)\n";
 					if (!config.manualswitch && dcapacity >= 5)
-						strstat += "Full Capacity Estimation: " + to_string(esfullWh) + " Wh ("
-						           + to_string(esfullmAh) + " mAh)\n";
+						strstat += "Full Capacity Estimation: " + float_str(esfullWh) + " Wh ("
+						           + float_str(esfullmAh, 0) + " mAh)\n";
 					
 					cout << '\n' << strstat << '\n';
 				
@@ -582,7 +585,7 @@ void checkloop(){
 					}
 					if (tagsavelog){ //save complete log
 						string log_filename = (pcharging? "Charging_" : "Discharging_")
-						                    + time_string(time(NULL),true) + ".log";
+						                    + time_str(time(NULL),true) + ".log";
 						ofstream ofslog(log_filename);
 						if (ofslog){
 							ofslog << strstat << '\n';
@@ -599,12 +602,14 @@ void checkloop(){
 				// swap with a empty temp vector that will be destructed implicitly to release memory usage
 				vector<power_reading>().swap(readings);
 				
-				Wh = 0; mAh = 0; rWh = 0; otimes = 0;
+				maxW = 0; Wh = 0; mAh = 0; rWh = 0; otimes = 0;
 				if (tagexit) return;
 			}
 		} else first = false;
 		
 		cout << creading.usrstr();
+		
+		if (abs(creading.power()) > abs(maxW)) maxW = creading.power();
 		if (creading.outofrange) otimes++;
 		
 		//add an item. if previous readings was cleared, it makes sure the vector has at least one item
@@ -613,6 +618,36 @@ void checkloop(){
 		pcharging = creading.charging;
 		sleep(check_interval); //5 seconds
 	}
+}
+
+void inputloop(){
+	string str;
+	
+	cout << "press Ctrl+D or input 'e' to end the program, input 'l' to enable/disable complete log saving";
+	if (config.manualswitch)
+		cout << ", input 'c'(charging) or 'd'(discharging) to set charging status (nessesary, it should be right after you plug in or pull out the charge line).\n"
+			 << "Notice: to avoid disturbing, this program determines "
+			 << "whether or not to make alarm sound by your manual status setting.\n\n";
+	else cout << ".\n\n";
+	
+	while (cin >> str){
+		char f = tolower(str.c_str()[0]);
+		switch (f){
+			case 'e':
+				tagexit = true; break;
+			case 'c':
+				if (config.manualswitch) tagcharging = true;
+				break;
+			case 'd':
+				if (config.manualswitch) tagcharging = false;
+				break;
+			case 'l':
+				tagsavelog = ! tagsavelog;
+				cout << "Log Saving " << (tagsavelog? "Enabled" : "Disabled") << ".\n";
+		}
+	}
+	
+	tagexit = true; // Ctrl+D pressed, input ended
 }
 
 int main(int argc, char* argv[]){
