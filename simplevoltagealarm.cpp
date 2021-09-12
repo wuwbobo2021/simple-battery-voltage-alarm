@@ -80,17 +80,13 @@ string difftime_str(time_t time){
 }
 
 bool askyn(){
-	static char s[65536];
+	static char s[1024];
 	s[0] = '\0';
-	cin.getline(s, 65536);
+	cin.getline(s, 1024);
 	return tolower(s[0]) == 'y';
 }
 
-void cpause(){
-	static char s[65536];
-	s[0] = '\0';
-	cin.getline(s, 65536);
-}
+void cpause() {askyn();}
 
 struct power_reading { //sizeof per record (on 64-bit platforms): 32 B
 	time_t time;
