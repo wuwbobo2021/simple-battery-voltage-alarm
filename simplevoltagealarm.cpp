@@ -1,54 +1,23 @@
-// simple-battery-voltage-alarm Version 1.15
+// simple-battery-voltage-alarm Version 1.18
 // Makes alarm sound in the terminal while battery voltage is out of range,
 // and produces some statistic information. This program can only run on
 // tablet or notebook computers with Linux installed.
 
-// This code has been placed in the public domain. Without any warranty.
-// However, In the purpose of bug reporting and version identification,
-// anyone who modifies the code should remain this comment and add
-// a record with an email address and the modifying date included.
+// Copyright (C) 2021 wuwbobo2021 <wuwbobo@outlook.com>
+// GitHub Repository: <https://github.com/wuwbobo2021/simple-battery-voltage-alarm>
 
-// to show the code properly, you can set the tab width to 4.
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+//  (at your option) any later version.
 
-// Command for compiling:
-// g++ <codefile> -std=c++11 -pthread -o <executablefile>
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
 
-// Version 1.00 (2021-7-14, by wuwbobo@outlook.com)
-// First usable version.
-
-// Version 1.10 (2021-8-12, by wuwbobo@outlook.com)
-// First release on github. Major changes:
-// 1. The method of searching power gauge device path was changed,
-//    so user interaction is no longer required;
-// 2. The bug of not making alarm sound while battery power is too high was fixed;
-// 3. Checking for full status was considered.
-// 4. Problems in config directory accessing was solved,
-//    and config file format was changed in a clearer way;
-// 5. A parameter '-c' for configuration was provided;
-// 6. Log saving is disabled by default, but the user can enable it
-//    by adding '-l' parameter while starting the program.
-// 7. Memory usage limit of recorded readings was changed to 4 MB.
-
-// Version 1.15 (2021-8-15, by wuwbobo@outlook.com)
-// 1. Decimal digits was limited to 3 to improve readability;
-// 2. Statistic feature and log feature was redesigned: average power
-//    can be calculated; the useless 'efficiency' was replaced by thermal power;
-//    maximum power and full capacity estimation was added;
-// 3. Conditions of program resuming after computer had slept was considered,
-//    so it will not make wrong statistics.
-// 4. In case of the power status needs to be set mannually and it was delayed,
-//    the program will check if there's significant voltage difference between
-//    last three readings, if so, it might be caused by r while status was changed,
-//    so the program will discard last 1 or 2 reading(s) to make correct summary.
-// 5. Fixed some bugs.
-
-// Known problems:
-// 1. This is a terminal program, which cannot run on startup or in background;
-//    and it may supsend in sleep mode.
-// 2. Calculation of 'mAh' don't care the internal resistance (maybe it's not a problem).
-// 3. Yet this program don't use the interface functions declared in 'power_supply.h'
-//    of Linux kernel headers. (it might not be a problem)
-//    see: https://www.kernel.org/doc/html/latest/power/power_supply_class.html
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include <iostream>
 #include <sstream>
@@ -110,6 +79,19 @@ string difftime_str(time_t time){
 	return str;
 }
 
+bool askyn(){
+	static char s[65536];
+	s[0] = '\0';
+	cin.getline(s, 65536);
+	return tolower(s[0]) == 'y';
+}
+
+void cpause(){
+	static char s[65536];
+	s[0] = '\0';
+	cin.getline(s, 65536);
+}
+
 struct power_reading { //sizeof per record (on 64-bit platforms): 32 B
 	time_t time;
 	bool charging; bool full;
@@ -127,9 +109,9 @@ struct power_reading { //sizeof per record (on 64-bit platforms): 32 B
 	operator const string();
 };
 
-power_reading::power_reading(){outofrange = false;}
+power_reading::power_reading(): outofrange(false) {};
 power_reading::power_reading(time_t t, bool c, bool f, float v, float a, float e, int cp):
-	time(t), charging(c), full(f), voltage(v), current(a), E(e), capacity(cp) {outofrange = false;}
+	time(t), charging(c), full(f), voltage(v), current(a), E(e), capacity(cp), outofrange(false) {}
 	
 // absorbed power of the battery.
 // but in cases of 'manualswitch' and 'charging', it is the power of computer circuit (minus).
@@ -157,6 +139,7 @@ power_reading::operator const string(){ // implicit cast to const std::string
 class power_status_reader {
 	string devicepath; bool manualswitch; float ir;
 	string statuspath, voltagepath, currentpath, capacitypath;
+	float maxv; string tech;
 	bool invalid;
 	
 	float freadvalue(string filepath);
@@ -232,6 +215,22 @@ power_status_reader::power_status_reader(bool m, float r):
 			charging = false;
 	}
 	invalid = false;
+	
+	string techpath = devicepath + "technology";
+	if (! file_readable(techpath))
+		tech = "";
+	else
+		tech = freadstring(techpath); 
+	
+	string maxvpath = devicepath + "voltage_max_design";
+	if (file_readable(maxvpath)){
+		maxv = freadvalue(maxvpath)/1000/1000;
+	} else {
+		if (tech.length() >= 6 && tech.substr(0, 6) == "Li-ion")
+			maxv = 4.35; //polymer?
+		else //almost impossible?
+			maxv = 5; //of no use
+	}
 }
 	
 power_status_reader::operator const bool() const{
@@ -264,17 +263,11 @@ power_reading power_status_reader::read(){
 }
 	
 float power_status_reader::maxvoltage(){
-	if (invalid) return 0;
-	string path = devicepath + "voltage_max_design";
-	if (! file_readable(path)) return 0;
-	return freadvalue(path)/1000/1000;
+	return maxv;
 }
 	
 string power_status_reader::technology(){
-	if (invalid) return "";
-	string path = devicepath + "technology";
-	if (! file_readable(path)) return "";
-	return freadstring(path); 
+	return tech;
 }
 
 struct poweralarmconfig{
@@ -292,7 +285,7 @@ struct poweralarmconfig{
 
 poweralarmconfig::poweralarmconfig() {reset();}
 void poweralarmconfig::reset(){
-	ir = 0.1; minvoltage = 3.8; maxvoltage = 4.15; maxpower = 5;
+	ir = 0.1; minvoltage = 3.8; maxvoltage = 4.1; maxpower = 5;
 }
 	
 string poweralarmconfig::usrstr(){
@@ -332,7 +325,7 @@ istream& operator>> (istream& is, poweralarmconfig& c){
 // default working folder will be ~ ($HOME) after chdir by getconfig(),
 // while ofstream::open(char*) and system(char*) are being called
 const string config_entry = "simple-battery-voltage-alarm";
-const string config_filename = "version_1_15.conf";
+const string config_filename = "version_1_18.conf";
 const string stat_filename = "stat.log";
 
 string working_folder;
@@ -345,12 +338,11 @@ bool setconfig(){
 		return false;
 	}
 	
-	cout << "simple-battery-voltage-alarm Version 1.15\n"
+	cout << "simple-battery-voltage-alarm Version 1.18\n"
 		 << "\tThis program checks for battery voltage and makes "
 		 << "alarm sound when the voltage (indicating current capacity) is out of proper range.\n"
 		 << "\tRequirement: driver support of your model of fuel gauge (PMIC) "
 		 << "included in your Linux distribution (Ubuntu should have no problem).\n\n";
-	cout << "\tConfig not found, we'll start configuration.\n\n";
 	
 	working_folder = getenv("HOME") + (string)"/.config";
 	if (! file_readable(working_folder)){
@@ -364,12 +356,12 @@ bool setconfig(){
 	}
 	chdir(working_folder.c_str());
 	
-	char s[256]; //temp c string
+	cout.setf(ios::fixed); cout.precision(3);
+	
 	cout << "\tHas your battery charge circuit been fixed in a way which made the battery(s) "
 		 << "get charged immediately from the adapter (which is modified to output a lower voltage)"
 		 << "and the power gauge can not get the charging status? (Y/n) ";
-	cin.getline(s, 256);
-	config.manualswitch = (tolower(s[0]) == 'y');
+	config.manualswitch = askyn();
 	if (config.manualswitch)
 		cout << "\tNotice: the power gauge might have been giving out wrong percentages, "
 			 << "because charging current don't flow through it (the current is always consuming current). "
@@ -392,29 +384,28 @@ bool setconfig(){
 	cout << "\tWe'll measure the internal resitance of the battery.\n";
 	if (config.manualswitch){
 		cout << "\tPlease make sure you're Discharging, then press Enter to continue...";
-		cin.getline(s, 256);
+		cpause();
 	}
 	tmprecord = testrd.read(); U1 = tmprecord.voltage; I1 = -tmprecord.current;
-	cout << "\tSample 1: " << float_str(U1) << " V, " << float_str(I1) << " A.\n";
+	cout << "\tSample 1: " << U1 << " V, " << I1 << " A.\n";
 			
 	cout << "\tPlease do somthing to make the current change"
 		 << (config.manualswitch? " (but make sure it is Discharging)" : "")
 		 << ", then press Enter to continue...";
-	cin.getline(s, 256);
+	cpause();
 	
 	tmprecord = testrd.read(); U2 = tmprecord.voltage; I2 = -tmprecord.current;
-	cout << "\tSample 2: " << float_str(U2) << " V, " << float_str(I2) << " A.\n";
+	cout << "\tSample 2: " << U2 << " V, " << I2 << " A.\n";
 	
 	if (abs(I1 - I2) < 0.001)
-		cout << "\tSorry, the current has not changed, r was set to default: " << float_str(config.ir) << " Ω.\n";
+		cout << "\tSorry, the current has not changed, r was set to default: " << config.ir << " Ω.\n";
 	else {
 		r = (U2 - U1)/(I1 - I2);
-		cout << "\tr: " << float_str(r) << " Ω. do you think it's right value? (Y/n) ";
-		cin.getline(s, 256);
-		if (tolower(s[0]) == 'y')
+		cout << "\tr: " << r << " Ω. do you think it's right value? (Y/n) ";
+		if (askyn())
 			config.ir = r;
 		else
-			cout << "\tr was set to default: " << float_str(config.ir) << " Ω.\n";
+			cout << "\tr was set to default: " << config.ir << " Ω.\n";
 	}
 	cout << '\n';
 	
@@ -434,8 +425,8 @@ bool setconfig(){
 	
 	if (! cin) {
 		cout << "\n\tSorry, at least one of them is not numeric. "
-			 << "Default values will be used: " << float_str(config.minvoltage) << '~'
-			 << float_str(config.maxvoltage) << " V, " << float_str(config.maxpower) << " W.\n";
+			 << "Default values will be used: " << config.minvoltage << '~'
+			 << config.maxvoltage << " V, " << config.maxpower << " W.\n";
 		cin.clear(); cin.ignore(numeric_limits<int>::max(), '\n');
 	} else {config.minvoltage = tmpminv; config.maxvoltage = tmpmaxv; config.maxpower = tmpmaxp;}
 		
@@ -491,10 +482,12 @@ void checkloop(){
 		
 		creading.outofrange = (   creading.voltage < config.minvoltage
 							   || creading.E > config.maxvoltage
+							   || creading.voltage > reader.maxvoltage()
 							   || abs(creading.power()) > config.maxpower);
 		if (creading.outofrange) {
 			bool actuald = !creading.charging || (!config.manualswitch && creading.current < 0);
 			if  ((actuald && creading.voltage < config.minvoltage)
+			  || (creading.voltage > reader.maxvoltage())
 			  || (creading.charging && creading.E > config.maxvoltage)
 			  || abs(creading.power()) > config.maxpower)
 				cout << '\a'; //make alarm sound
@@ -564,7 +557,7 @@ void checkloop(){
 					         + " (out of range in " + to_string(poutrange) + "% of time)\n";
 					if (!config.manualswitch || !pcharging)
 						strstat += "Average Power of Battery: " + float_str(W) + " W (Max: " + float_str(maxW) + " W)    "
-						         + "Thermal Power (r): " + float_str(rW) + " W\n"
+						         + "Pr: " + float_str(rW) + " W\n"
 						         + "Charged: " + float_str((Wh > 0)? CWh : Wh, 3, true) + " Wh ("
 						         + float_str(mAh, 0, true) + " mAh)\n";
 					else
