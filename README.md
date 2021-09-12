@@ -5,7 +5,7 @@ A Linux program which can make alarm sound in the terminal while battery voltage
 ```
 git clone https://github.com/wuwbobo2021/simple-battery-voltage-alarm
 cd simple-battery-voltage-alarm
-g++ simplevoltagealarm.cpp -std=c++11 -pthread -o /usr/bin/simple-battery-voltage-alarm
+sudo g++ simplevoltagealarm.cpp -std=c++11 -pthread -o /usr/bin/simple-battery-voltage-alarm
 ```
 
 ## Known problems
