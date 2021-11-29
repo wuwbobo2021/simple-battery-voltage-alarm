@@ -457,7 +457,7 @@ bool getconfig(){
 }
 
 //inputloop() will set these tags for checkloop() to read
-bool tagexit = false; bool tagcharging = false; bool tagsavelog = false; 
+volatile bool tagexit = false, tagcharging = false, tagsavelog = false; 
 
 void checkloop(){
 	const int check_interval = 5; // 5 seconds
@@ -601,7 +601,7 @@ void checkloop(){
 		if (abs(creading.power()) > abs(maxW)) maxW = creading.power();
 		if (creading.outofrange) otimes++;
 		
-		//add an item. if previous readings was cleared, it makes sure the vector has at least one item
+		//add an item. if previous readings were cleared, it makes sure the vector has at least one item
 		readings.push_back(creading);
 		
 		pcharging = creading.charging;
